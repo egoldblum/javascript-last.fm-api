@@ -3,13 +3,17 @@
  * Copyright (c) 2008-2010, Felix Bruns <felixbruns@web.de>
  *
  */
+var crypto = require('crypto'),
+    http = require('http'),
+    querystring = require('querystring');
 
-function LastFM(options){
+exports.LastFM = function LastFM(options){
 	/* Set default values for required options. */
 	var apiKey    = options.apiKey    || '';
 	var apiSecret = options.apiSecret || '';
-	var apiUrl    = options.apiUrl    || 'http://ws.audioscrobbler.com/2.0/';
-	var cache     = options.cache     || undefined;
+	var apiUrl    = options.apiUrl    || 'ws.audioscrobbler.com';
+	var apiPort    = options.apiPort    || 80; 
+    var apiVersion = options.apiVersion || '/2.0/';
 
 	/* Set API key. */
 	this.setApiKey = function(_apiKey){
@@ -26,142 +30,55 @@ function LastFM(options){
 		apiUrl = _apiUrl;
 	};
 
-	/* Set cache. */
-	this.setCache = function(_cache){
-		cache = _cache;
-	};
 
 	/* Internal call (POST, GET). */
 	var internalCall = function(params, callbacks, requestMethod){
-		/* Cross-domain POST request (doesn't return any data, always successful). */
-		if(requestMethod == 'POST'){
-			/* Create iframe element to post data. */
-			var html   = document.getElementsByTagName('html')[0];
-			var iframe = document.createElement('iframe');
-			var doc;
+        params.format = 'json';
+        params = querystring.stringify(params);
+        if (requestMethod == 'POST') {
+            var options = {
+                host: apiUrl,
+                port: apiPort,
+                path: apiVersion,
+                method: requestMethod 
+            }; 
+            var request = http.request(options, dataHandler);
+            request.on('error', errorHandler);
+            request.setHeader('Content-Length', params.length);
+            request.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+            request.end(params);
+        } else {
+            var options = {
+                host: apiUrl,
+                port: apiPort,
+                path: apiVersion + '?' + params
+            }; 
+            http.get(options,dataHandler).on('error', errorHandler);
+        }
 
-			/* Set iframe attributes. */
-			iframe.width        = 1;
-			iframe.height       = 1;
-			iframe.style.border = 'none';
-			iframe.onload       = function(){
-				/* Remove iframe element. */
-				//html.removeChild(iframe);
+        function errorHandler(e) {
+            if(callbacks && (typeof(callbacks.error) === 'function')){
+                callbacks.error(-1, e.message);
+            }
+        }
 
-				/* Call user callback. */
-				if(typeof(callbacks.success) != 'undefined'){
-					callbacks.success();
-				}
-			};
-
-			/* Append iframe. */
-			html.appendChild(iframe);
-
-			/* Get iframe document. */
-			if(typeof(iframe.contentWindow) != 'undefined'){
-				doc = iframe.contentWindow.document;
-			}
-			else if(typeof(iframe.contentDocument.document) != 'undefined'){
-				doc = iframe.contentDocument.document.document;
-			}
-			else{
-				doc = iframe.contentDocument.document;
-			}
-
-			/* Open iframe document and write a form. */
-			doc.open();
-			doc.clear();
-			doc.write('<form method="post" action="' + apiUrl + '" id="form">');
-
-			/* Write POST parameters as input fields. */
-			for(var param in params){
-				doc.write('<input type="text" name="' + param + '" value="' + params[param] + '">');
-			}
-
-			/* Write automatic form submission code. */
-			doc.write('</form>');
-			doc.write('<script type="application/x-javascript">');
-			doc.write('document.getElementById("form").submit();');
-			doc.write('</script>');
-
-			/* Close iframe document. */
-			doc.close();
-		}
-		/* Cross-domain GET request (JSONP). */
-		else{
-			/* Get JSONP callback name. */
-			var jsonp = 'jsonp' + new Date().getTime();
-
-			/* Calculate cache hash. */
-			var hash = auth.getApiSignature(params);
-
-			/* Check cache. */
-			if(typeof(cache) != 'undefined' && cache.contains(hash) && !cache.isExpired(hash)){
-				if(typeof(callbacks.success) != 'undefined'){
-					callbacks.success(cache.load(hash));
-				}
-
-				return;
-			}
-
-			/* Set callback name and response format. */
-			params.callback = jsonp;
-			params.format   = 'json';
-
-			/* Create JSONP callback function. */
-			window[jsonp] = function(data){
-				/* Is a cache available?. */
-				if(typeof(cache) != 'undefined'){
-					var expiration = cache.getExpirationTime(params);
-
-					if(expiration > 0){
-						cache.store(hash, data, expiration);
-					}
-				}
-
-				/* Call user callback. */
-				if(typeof(data.error) != 'undefined'){
-					if(typeof(callbacks.error) != 'undefined'){
-						callbacks.error(data.error, data.message);
-					}
-				}
-				else if(typeof(callbacks.success) != 'undefined'){
-					callbacks.success(data);
-				}
-
-				/* Garbage collect. */
-				window[jsonp] = undefined;
-
-				try{
-					delete window[jsonp];
-				}
-				catch(e){
-					/* Nothing. */
-				}
-
-				/* Remove script element. */
-				if(head){
-					head.removeChild(script);
-				}
-			};
-
-			/* Create script element to load JSON data. */
-			var head   = document.getElementsByTagName("head")[0];
-			var script = document.createElement("script");
-
-			/* Build parameter string. */
-			var array = [];
-
-			for(var param in params){
-				array.push(encodeURIComponent(param) + "=" + encodeURIComponent(params[param]));
-			}
-
-			/* Set script source. */
-			script.src = apiUrl + '?' + array.join('&').replace(/%20/g, '+');
-
-			/* Append script element. */
-			head.appendChild(script);
-		}
+        function dataHandler(response) {
+            response.setEncoding('utf8');
+            response.on('data', function(data) {
+                var statusCode = response.statusCode;
+                if (statusCode != 200) {
+                    if(callbacks && (typeof(callbacks.error) === 'function')){
+                        callbacks.error(statusCode, data);
+                    }
+                } else if(typeof(data.error) !== 'undefined'){
+                    if(callbacks && (typeof(callbacks.error) === 'function')){
+                        callbacks.error(data.error, data.message);
+                    }
+                } else if(callbacks && (typeof(callbacks.success) === 'function')) {
+                    callbacks.success(JSON.parse(data));
+                }
+            });
+        }
 	};
 
 	/* Normal method call. */
@@ -174,7 +91,6 @@ function LastFM(options){
 		/* Add parameters. */
 		params.method  = method;
 		params.api_key = apiKey;
-
 		/* Call method. */
 		internalCall(params, callbacks, requestMethod);
 	};
@@ -334,7 +250,7 @@ function LastFM(options){
 			/* Set new params object with authToken. */
 			params = {
 				username  : params.username,
-				authToken : md5(params.username + md5(params.password))
+				authToken : util.md5(params.username + util.md5(params.password))
 			};
 
 			signedCall('auth.getMobileSession', params, null, callbacks);
@@ -836,9 +752,14 @@ function LastFM(options){
 			}
 
 			string += apiSecret;
-
-			/* Needs lastfm.api.md5.js. */
-			return md5(string);
+            
+            return util.md5(string);
 		}
 	};
+
+    var util = {
+        md5: function(string) {
+            return crypto.createHash('md5').update(string).digest('hex');
+        }
+    };
 }
